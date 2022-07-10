@@ -2,7 +2,7 @@ import os
 import argparse
 import xml.etree.ElementTree as ET
 import pandas as pd
-import numpy as np
+import string
 import csv
 
 # Useful if you want to perform stemming.
@@ -49,8 +49,33 @@ df = pd.read_csv(queries_file_name)[['category', 'query']]
 df = df[df['category'].isin(categories)]
 
 # IMPLEMENT ME: Convert queries to lowercase, and optionally implement other normalization, like stemming.
+lower_transform = lambda q: q.lower()
+strip_transform  = lambda q : q.strip()
+pontuation_transform = lambda q: q.translate(str.maketrans('', '', string.punctuation))
+stemming_transform = lambda q: stemmer.stem(q)
+
+df['query'] = df['query'].apply(lower_transform)\
+    .apply(strip_transform)\
+    .apply(pontuation_transform)\
+    .apply(stemming_transform)
 
 # IMPLEMENT ME: Roll up categories to ancestors to satisfy the minimum number of queries per category.
+min_products_per_category = int(args.min_queries)
+parents_lookup = dict(zip(parents_df.category, parents_df.parent))
+parents_lookup[root_category_id] = root_category_id
+
+while True:
+    grouped = df.groupby('category').count().reset_index()[['category', 'query']]
+    grouped.columns = ['category', 'num']
+
+    categories_to_roll = set(grouped[grouped.num < min_products_per_category].category.values)
+    if len(categories_to_roll) == 0:
+        break
+
+    curr_mapping = {c:(c if c not in categories_to_roll else parents_lookup[c]) for c in grouped.category.values}
+    df.category = df.category.apply(lambda c: curr_mapping[c])
+    print(f'num_categories: {len(set(df.category.values))}')
+
 
 # Create labels in fastText format.
 df['label'] = '__label__' + df['category']

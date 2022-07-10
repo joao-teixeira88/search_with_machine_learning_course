@@ -11,6 +11,7 @@ from urllib.parse import urljoin
 import pandas as pd
 import fileinput
 import logging
+import fasttext
 
 
 logger = logging.getLogger(__name__)
@@ -49,28 +50,35 @@ def create_prior_queries(doc_ids, doc_id_weights,
 
 
 # Hardcoded query here.  Better to use search templates or other query config.
-def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None):
+def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None,
+                 synonyms=False, predicted_category=None):
+    name_field = "name" if not synonyms else "name.synonyms"
+
+    category = predicted_category[0][0].lstrip("__label__")
+    category_score = predicted_category[1][0]
+
+    print(f"Predicted: {category}:{category_score}")
+
+    if category_score > 0.5:
+        filters.append({"term": {"categoryLeaf": category}})
+
     query_obj = {
-        'size': size,
-        "sort": [
-            {sort: {"order": sortDir}}
-        ],
+        "size": size,
+        "sort": [{sort: {"order": sortDir}}],
         "query": {
             "function_score": {
                 "query": {
                     "bool": {
-                        "must": [
-
-                        ],
+                        "must": [],
                         "should": [  #
                             {
                                 "match": {
-                                    "name": {
+                                    name_field: {
                                         "query": user_query,
                                         "fuzziness": "1",
                                         "prefix_length": 2,
                                         # short words are often acronyms or usually not misspelled, so don't edit
-                                        "boost": 0.01
+                                        "boost": 0.01,
                                     }
                                 }
                             },
@@ -79,7 +87,7 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                                     "name.hyphens": {
                                         "query": user_query,
                                         "slop": 1,
-                                        "boost": 50
+                                        "boost": 50,
                                     }
                                 }
                             },
@@ -89,16 +97,24 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                                     "type": "phrase",
                                     "slop": "6",
                                     "minimum_should_match": "2<75%",
-                                    "fields": ["name^10", "name.hyphens^10", "shortDescription^5",
-                                               "longDescription^5", "department^0.5", "sku", "manufacturer", "features",
-                                               "categoryPath"]
+                                    "fields": [
+                                        f"#{name_field}^10",
+                                        "name.hyphens^10",
+                                        "shortDescription^5",
+                                        "longDescription^5",
+                                        "department^0.5",
+                                        "sku",
+                                        "manufacturer",
+                                        "features",
+                                        "categoryPath",
+                                    ],
                                 }
                             },
                             {
                                 "terms": {
                                     # Lots of SKUs in the query logs, boost by it, split on whitespace so we get a list
                                     "sku": user_query.split(),
-                                    "boost": 50.0
+                                    "boost": 50.0,
                                 }
                             },
                             {  # lots of products have hyphens in them or other weird casing things like iPad
@@ -106,75 +122,52 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                                     "name.hyphens": {
                                         "query": user_query,
                                         "operator": "OR",
-                                        "minimum_should_match": "2<75%"
+                                        "minimum_should_match": "2<75%",
                                     }
                                 }
-                            }
+                            },
                         ],
                         "minimum_should_match": 1,
-                        "filter": filters  #
+                        "filter": filters,  #
                     }
                 },
                 "boost_mode": "multiply",  # how _score and functions are combined
                 "score_mode": "sum",  # how functions are combined
                 "functions": [
                     {
-                        "filter": {
-                            "exists": {
-                                "field": "salesRankShortTerm"
-                            }
-                        },
+                        "filter": {"exists": {"field": "salesRankShortTerm"}},
                         "gauss": {
-                            "salesRankShortTerm": {
-                                "origin": "1.0",
-                                "scale": "100"
-                            }
-                        }
+                            "salesRankShortTerm": {"origin": "1.0", "scale": "100"}
+                        },
                     },
                     {
-                        "filter": {
-                            "exists": {
-                                "field": "salesRankMediumTerm"
-                            }
-                        },
+                        "filter": {"exists": {"field": "salesRankMediumTerm"}},
                         "gauss": {
-                            "salesRankMediumTerm": {
-                                "origin": "1.0",
-                                "scale": "1000"
-                            }
-                        }
+                            "salesRankMediumTerm": {"origin": "1.0", "scale": "1000"}
+                        },
                     },
                     {
-                        "filter": {
-                            "exists": {
-                                "field": "salesRankLongTerm"
-                            }
-                        },
+                        "filter": {"exists": {"field": "salesRankLongTerm"}},
                         "gauss": {
-                            "salesRankLongTerm": {
-                                "origin": "1.0",
-                                "scale": "1000"
-                            }
-                        }
+                            "salesRankLongTerm": {"origin": "1.0", "scale": "1000"}
+                        },
                     },
-                    {
-                        "script_score": {
-                            "script": "0.0001"
-                        }
-                    }
-                ]
-
+                    {"script_score": {"script": "0.0001"}},
+                ],
             }
-        }
+        },
     }
+
     if click_prior_query is not None and click_prior_query != "":
-        query_obj["query"]["function_score"]["query"]["bool"]["should"].append({
-            "query_string": {
-                # This may feel like cheating, but it's really not, esp. in ecommerce where you have all this prior data,  You just can't let the test clicks leak in, which is why we split on date
-                "query": click_prior_query,
-                "fields": ["_id"]
+        query_obj["query"]["function_score"]["query"]["bool"]["should"].append(
+            {
+                "query_string": {
+                    # This may feel like cheating, but it's really not, esp. in ecommerce where you have all this prior data,  You just can't let the test clicks leak in, which is why we split on date
+                    "query": click_prior_query,
+                    "fields": ["_id"],
+                }
             }
-        })
+        )
     if user_query == "*" or user_query == "#":
         # replace the bool
         try:
@@ -183,14 +176,18 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
             print("Couldn't replace query for *")
     if source is not None:  # otherwise use the default and retrieve all source
         query_obj["_source"] = source
+
     return query_obj
 
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc"):
-    #### W3: classify the query
-    #### W3: create filters and boosts
-    # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"])
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False):
+    model = fasttext.load_model("/workspace/datasets/fasttext/model_data.bin")
+
+    predicted_category = model.predict(user_query)
+    query_obj = create_query(user_query, click_prior_query=None, filters=[], sort=sort, sortDir=sortDir,
+                             source=["name", "shortDescription"],  synonyms=synonyms,
+                             predicted_category=predicted_category)
+
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
