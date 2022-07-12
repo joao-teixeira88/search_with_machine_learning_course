@@ -13,7 +13,7 @@ import fasttext
 from pathlib import Path
 import requests
 import json
-
+from sentence_transformers import SentenceTransformer
 from time import perf_counter
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,8 @@ logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
 
 # IMPLEMENT ME: import the sentence transformers module!
+model = SentenceTransformer('all-MiniLM-L6-v2')
+print(model)
 
 # NOTE: this is not a complete list of fields.  If you wish to add more, put in the appropriate XPath expression.
 #TODO: is there a way to do this using XPath/XSL Functions so that we don't have to maintain a big list?
@@ -144,7 +146,10 @@ def index_file(file, index_name, reduced=False):
             bulk(client, docs, request_timeout=60)
             logger.info(f'{docs_indexed} documents indexed')
             docs = []
-            names = []
+            names += doc['name']
+
+    print(names)
+
     if len(docs) > 0:
         bulk(client, docs, request_timeout=60)
         logger.info(f'{docs_indexed} documents indexed')
@@ -165,6 +170,7 @@ def main(source_dir: str, index_name: str, reduced: bool):
 
     finish = perf_counter()
     logger.info(f'Done. Total docs: {docs_indexed} in {(finish - start)/60} minutes')
+
 
 if __name__ == "__main__":
     main()
