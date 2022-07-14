@@ -14,6 +14,7 @@ from pathlib import Path
 import requests
 import json
 from sentence_transformers import SentenceTransformer
+from itertools import combinations
 from time import perf_counter
 
 logger = logging.getLogger(__name__)
@@ -140,13 +141,20 @@ def index_file(file, index_name, reduced=False):
             continue
         docs.append({'_index': index_name, '_id':doc['sku'][0], '_source' : doc})
         #docs.append({'_index': index_name, '_source': doc})
+        names.append(doc['name'][0])
+
         docs_indexed += 1
         if docs_indexed % 200 == 0:
             logger.info("Indexing")
+
+            embeddings = model.encode(names)
+            for doc, embedding in zip(docs, embeddings):
+                doc['_source']['name_embedding'] = embedding
+
             bulk(client, docs, request_timeout=60)
             logger.info(f'{docs_indexed} documents indexed')
             docs = []
-            names += doc['name']
+            names.clear()
 
     print(names)
 
