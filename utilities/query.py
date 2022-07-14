@@ -2,6 +2,7 @@
 # weeks (e.g. query understanding).  See the main section at the bottom of the file
 from opensearchpy import OpenSearch
 import warnings
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 import argparse
 import json
@@ -12,11 +13,34 @@ import pandas as pd
 import fileinput
 import logging
 import fasttext
-
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
+
+model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+print(model)
+
+
+def create_vector_query(query_str: str, n_results: int, source=None):
+    embedding = model.encode([query_str])[0]
+    obj = {
+        "size": n_results,
+        "query": {
+            "knn": {
+                "name_embedding": {
+                    "vector": list(embedding),
+                    "k": n_results
+                }
+            }
+        }
+    }
+    if source is not None:
+        obj["_source"] = source
+
+    return obj
+
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
@@ -180,13 +204,18 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
     return query_obj
 
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False):
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False,
+           use_vector_search=False):
     model = fasttext.load_model("/workspace/datasets/fasttext/model_data.bin")
 
     predicted_category = model.predict(user_query)
-    query_obj = create_query(user_query, click_prior_query=None, filters=[], sort=sort, sortDir=sortDir,
-                             source=["name", "shortDescription"],  synonyms=synonyms,
-                             predicted_category=predicted_category)
+
+    if use_vector_search:
+        query_obj = create_vector_query(query_str=user_query, n_results=10)
+    else:
+        query_obj = create_query(user_query, click_prior_query=None, filters=[], sort=sort, sortDir=sortDir,
+                                 source=["name", "shortDescription"], synonyms=synonyms,
+                                 predicted_category=predicted_category)
 
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
@@ -209,6 +238,8 @@ if __name__ == "__main__":
                          help='The OpenSearch port')
     general.add_argument('--user',
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
+    general.add_argument('--vector',
+                         help='Allow query vector', default=False)
 
     args = parser.parse_args()
 
@@ -242,8 +273,6 @@ if __name__ == "__main__":
         query = line.rstrip()
         if query == "Exit":
             break
-        search(client=opensearch, user_query=query, index=index_name)
+        search(client=opensearch, user_query=query, index=index_name, use_vector_search=args.vector)
 
         print(query_prompt)
-
-    
